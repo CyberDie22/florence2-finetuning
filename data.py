@@ -7,6 +7,74 @@ from PIL import Image
 from torch.utils.data import Dataset
 from tqdm import tqdm
 import random
+import pyexiv2
+import os
+from tqdm import tqdm
+import csv
+import time
+
+allowed_tags = []
+
+with open("danbooru_tags_post_count_general.csv", "r") as f:
+    reader = csv.reader(f)
+    for row in reader:
+        if row[2] == "post_count" or "cosplay" in row[0]:
+            continue
+        if int(row[2]) > 10:
+            allowed_tags.append(row[0])
+
+def generate_grabber_data(path, count_tokens):
+    global allowed_tags
+    print(f"Loading from path: {path}")
+    prompt = []
+    answer = []
+    image  = []
+    for filename in tqdm(os.listdir(path)):
+        file_path = os.path.join(path, filename)
+        description = get_xmp_description(file_path)
+        if description is None:
+            continue
+        fixed_description = ', '.join([tag for tag in description.split(' ') if tag in allowed_tags])
+        
+        task_prefix = "<MORE_DETAILED_DANBOORU_PROMPT>"
+
+        #if count_tokens(task_prefix + fixed_description) > 1020:
+        #    print(f"File {file_path} has too many tokens!")
+        #    time.sleep(5)
+
+        prompt.append(task_prefix)
+        answer.append(fixed_description)
+        image.append(file_path)
+    return prompt, answer, image
+
+def get_xmp_description(path):
+    try:
+        with pyexiv2.Image(path) as img:
+            xmp_data = img.read_xmp()
+            if 'Xmp.dc.description' in xmp_data:
+                return xmp_data['Xmp.dc.description']['lang="x-default"']
+    except Exception as e:
+        # ignore
+        print(e)
+    return None
+
+class GrabberDataset(Dataset):
+    def __init__(self, data):
+        self.data = data
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        example = self.data[idx]
+        question = example['prompt']
+        answer = example['answer']
+        image = example['image']
+        image = Image.open(image)
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        return question, answer, image
+
 
 class BaseDataset(Dataset):
     def __init__(self, split):

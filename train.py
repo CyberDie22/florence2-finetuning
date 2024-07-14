@@ -5,18 +5,20 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import (AdamW, AutoModelForCausalLM, AutoProcessor,
                           get_scheduler)
+from datasets import Dataset, Image, Sequence
 
-from data import DocVQADataset
+from data import (GrabberDataset, generate_grabber_data)
+import PIL
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Load the model and processor
 model = AutoModelForCausalLM.from_pretrained(
-    "microsoft/Florence-2-base-ft", trust_remote_code=True, revision="refs/pr/6"
+    "microsoft/Florence-2-large-ft", trust_remote_code=True
 ).to(device)
 processor = AutoProcessor.from_pretrained(
-    "microsoft/Florence-2-base-ft", trust_remote_code=True, revision="refs/pr/6"
+    "microsoft/Florence-2-large-ft", trust_remote_code=True
 )
 
 
@@ -27,13 +29,31 @@ def collate_fn(batch):
     ).to(device)
     return inputs, answers
 
+def data_split(data):
+    split_index = len(data) - len(data)//10
+    return data[:split_index], data[split_index:]
+
+test_image = PIL.Image.open("test.jpg")
+def count_tokens(text):
+    return len(processor(text=text, images=[test_image], return_tensors="np", padding=True)['input_ids'][0])
+
+prompts, answers, images = generate_grabber_data("Grabber", count_tokens)
+
+train_prompts, val_prompts = data_split(prompts)
+train_answers, val_answers = data_split(answers)
+train_images, val_images = data_split(images)
 
 # Create datasets
-train_dataset = DocVQADataset("train")
-val_dataset = DocVQADataset("validation")
+train_dataset = Dataset.from_dict({'prompt': train_prompts, 'answer': train_answers, 'image': train_images})
+train_dataset.cast_column('image', Image())
+val_dataset = Dataset.from_dict({'prompt': val_prompts, 'answer': val_answers, 'image': val_images})
+val_dataset.cast_column('image', Image())
+
+train_dataset = GrabberDataset(train_dataset)
+val_dataset = GrabberDataset(val_dataset)
 
 # Create DataLoader
-batch_size = 8
+batch_size = 1
 num_workers = 0
 
 train_loader = DataLoader(
@@ -97,14 +117,14 @@ def train_model(train_loader, val_loader, model, processor, epochs=10, lr=1e-6):
                 for generated_text, answer in zip(generated_texts, answers):
                     parsed_answer = processor.post_process_generation(
                         generated_text,
-                        task="<DocVQA>",
+                        task="<MORE_DETAILED_DANBOORU_CAPTION>",
                         image_size=(
                             inputs["pixel_values"].shape[-2],
                             inputs["pixel_values"].shape[-1],
                         ),
                     )
                     print("GT:", answer)
-                    print("Pred:", parsed_answer["<DocVQA>"])
+                    print("Pred:", parsed_answer["<MORE_DETAILED_DANBOORU_CAPTION>"])
 
             loss.backward()
             optimizer.step()
